@@ -1,27 +1,57 @@
-import importlib
-import logging
-from typing import List
+"""Convention-based tool discovery.
 
-from tethys_agents.tool import Tool
+For each package name a host passes in, this module imports ``<package>.tools``
+and harvests two shapes of "tool":
+
+1. Already-decorated :class:`Tool` instances (explicit opt-in). Plugin
+   authors who already depend on ``tethys-agents`` can use ``@tool`` to
+   register their callable.
+2. Public, type-annotated functions defined inside ``<package>.tools``
+   itself (zero-dep convention). The discoverer wraps them with the
+   ``@tool`` decorator at discovery time.
+
+The second path lets plugin packages contribute tools without listing
+``tethys-agents`` as a dependency - the framework awareness lives at the
+host (the process calling ``discover``), not at the plugin author.
+
+Filtering rules for the convention path:
+
+* Leading-underscore names are private helpers and skipped.
+* Only functions (``inspect.isfunction``) qualify - classes, instances,
+  and built-ins are skipped.
+* The function must be defined IN the ``tools.py`` module
+  (``__module__ == "<pkg>.tools"``). Imported callables that happen to
+  appear in the module namespace are skipped.
+* The function must carry type annotations - without them the generated
+  tool schema would be empty and the LLM couldn't call it.
+
+Duplicate tool names: first-listed wins; subsequent duplicates emit a
+WARNING log so the operator can rename one or remove a package from
+the host's tool-packages list.
+"""
+
+import importlib
+import inspect
+import logging
+from typing import Dict, List, Tuple
+
+from tethys_agents.tool import Tool, tool as _wrap_as_tool
 
 log = logging.getLogger(__name__)
 
 
-# TODO: this is a very simple implementation that only looks for Tool instances in <pkg>.tools.
-# WE NEED A BETTER WAY TO DISCOVER TOOLS, AND ALSO A BETTER WAY TO HANDLE DUPLICATE TOOL NAMES.
-
 def discover(packages: List[str]) -> List[Tool]:
-    """Import each package's `tools` module and harvest @tool callables.
+    """Import each package's ``tools`` module and harvest its tools.
 
     Args:
         packages: explicit list of trusted Python package import paths.
-            Each entry's `<pkg>.tools` module is imported and walked.
+            Each entry's ``<package>.tools`` module is imported and walked.
 
     Returns:
-        Deduplicated list of Tool instances; on duplicate names,
-        first-listed wins.
+        Deduplicated list of :class:`Tool` instances. On duplicate names,
+        first-listed wins and subsequent duplicates emit a WARNING log.
     """
-    seen = {}  # tool name -> (Tool, origin_pkg)
+    seen: Dict[str, Tuple[Tool, str]] = {}
 
     for pkg in packages:
         module_path = f"{pkg}.tools"
@@ -31,16 +61,33 @@ def discover(packages: List[str]) -> List[Tool]:
             log.warning("could not import %s; skipping", module_path, exc_info=True)
             continue
 
-        for value in vars(mod).values():
-            if not isinstance(value, Tool):
+        for attr_name, value in vars(mod).items():
+            # Path 1: already-decorated Tool instances pass through.
+            if isinstance(value, Tool):
+                _register(seen, value, pkg)
                 continue
-            if value.name in seen:
-                first_pkg = seen[value.name][1]
-                log.warning(
-                    "tool '%s' from '%s' shadows earlier registration from '%s'; keeping first",
-                    value.name, pkg, first_pkg,
-                )
-                continue
-            seen[value.name] = (value, pkg)
 
-    return [t for t, _ in seen.values()]
+            # Path 2: auto-wrap public, type-annotated functions defined
+            # in this module. See module docstring for filter rationale.
+            if (
+                not attr_name.startswith("_")
+                and inspect.isfunction(value)
+                and getattr(value, "__module__", None) == module_path
+                and getattr(value, "__annotations__", None)
+            ):
+                _register(seen, _wrap_as_tool(value), pkg)
+
+    return [tool for tool, _origin in seen.values()]
+
+
+def _register(seen: Dict[str, Tuple[Tool, str]], tool: Tool, pkg: str) -> None:
+    """Add a tool to the seen-dict; warn-and-skip on duplicate name."""
+    if tool.name in seen:
+        first_pkg = seen[tool.name][1]
+        log.warning(
+            "tool '%s' from package '%s' shadows earlier registration "
+            "from '%s'; keeping first",
+            tool.name, pkg, first_pkg,
+        )
+        return
+    seen[tool.name] = (tool, pkg)
