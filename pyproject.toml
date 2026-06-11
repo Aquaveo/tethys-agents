@@ -1,0 +1,21 @@
+[project]
+name = "tethys-agents"
+version = "0.1.0"
+description = "And yet another library  for agents in Tethys"
+readme = "README.md"
+authors = [
+    { name = "romer8", email = "gio.rombus@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "openai",
+    "colorama",
+    "python-dotenv",
+]
+
+[project.scripts]
+tethys-agents = "tethys_agents:main"
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
