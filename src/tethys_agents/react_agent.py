@@ -104,24 +104,89 @@ class ReactAgent:
         return text.strip()
 
     def process_tool_calls(self, tool_calls_content: list) -> dict:
-        """Validate, execute, and collect results for each tool call."""
+        """Validate, execute, and collect results for each tool call.
+
+        Robust against the three classes of LLM mishap that would
+        otherwise crash an entire request:
+
+        * Malformed JSON inside ``<tool_call>`` — small models emit typos
+          (``)`` for ``}``, missing commas, trailing junk).
+        * Unknown tool name — model hallucinates a tool not in
+          ``tools_dict`` (often from a system-prompt instruction that
+          referenced a tool the host didn't actually register).
+        * Tool body raising — plugin bug, network failure, permission
+          error, etc.
+
+        Each becomes an Observation the LLM can read on its next turn
+        and self-correct. The agent never raises out of this method.
+        """
         observations = {}
         for tool_call_str in tool_calls_content:
-            tool_call = json.loads(tool_call_str)
-            tool_name = tool_call["name"]
-            tool = self.tools_dict[tool_name]
+            call_id = len(observations)
+
+            # 1. Parse the tool_call JSON.
+            try:
+                tool_call = json.loads(tool_call_str)
+            except json.JSONDecodeError as exc:
+                print(
+                    Fore.RED
+                    + f"\nMalformed <tool_call> JSON ({exc}). Raw payload:\n"
+                    f"{tool_call_str!r}"
+                )
+                observations[call_id] = (
+                    f"Error: your <tool_call> body was not valid JSON ({exc}). "
+                    "Re-emit the tool_call with strict JSON: "
+                    '{"name": "...", "arguments": {...}, "id": <int>}.'
+                )
+                continue
+
+            # Honor the model-supplied id if present; fall back to ordinal.
+            call_id = tool_call.get("id", call_id)
+            tool_name = tool_call.get("name")
+            if not isinstance(tool_name, str) or not tool_name:
+                observations[call_id] = (
+                    "Error: tool_call missing 'name' (string) field."
+                )
+                continue
+
+            # 2. Resolve the tool.
+            tool = self.tools_dict.get(tool_name)
+            if tool is None:
+                print(
+                    Fore.RED
+                    + f"\nUnknown tool '{tool_name}'. "
+                    f"Available: {sorted(self.tools_dict.keys())}"
+                )
+                observations[call_id] = (
+                    f"Error: unknown tool '{tool_name}'. "
+                    f"Available tools: {sorted(self.tools_dict.keys())}. "
+                    "Use one of the available names exactly."
+                )
+                continue
 
             print(Fore.GREEN + f"\nUsing Tool: {tool_name}")
 
-            validated_tool_call = validate_arguments(
-                tool_call, json.loads(tool.fn_signature)
-            )
-            print(Fore.GREEN + f"\nTool call dict: \n{validated_tool_call}")
+            # 3. Validate and execute.
+            try:
+                validated_tool_call = validate_arguments(
+                    tool_call, json.loads(tool.fn_signature)
+                )
+                print(Fore.GREEN + f"\nTool call dict: \n{validated_tool_call}")
+                result = tool.run(**validated_tool_call["arguments"])
+                print(Fore.GREEN + f"\nTool result: \n{result}")
+            except Exception as exc:
+                print(
+                    Fore.RED
+                    + f"\nTool '{tool_name}' raised {type(exc).__name__}: {exc}"
+                )
+                observations[call_id] = (
+                    f"Error: tool '{tool_name}' raised "
+                    f"{type(exc).__name__}: {exc}. "
+                    "Check your arguments match the tool's schema."
+                )
+                continue
 
-            result = tool.run(**validated_tool_call["arguments"])
-            print(Fore.GREEN + f"\nTool result: \n{result}")
-
-            observations[validated_tool_call["id"]] = result
+            observations[call_id] = result
 
         return observations
 
