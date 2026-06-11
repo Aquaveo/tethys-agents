@@ -88,13 +88,20 @@ class ReactAgent:
         return "".join([tool.fn_signature for tool in self.tools])
 
     def _strip_thinking(self, completion: str) -> str:
-        """Drop the model's internal-reasoning block, if any."""
-        if not (self.model_spec.thinking_tag and self.model_spec.strip_thinking):
-            return completion
-        close_tag = f"</{self.model_spec.thinking_tag}>"
-        if close_tag in completion:
-            return completion.rsplit(close_tag, 1)[-1].strip()
-        return completion
+        """Clean a model completion of reasoning blocks and response-tag artifacts.
+        """
+        text = completion
+        # Step 1: strip the thinking block if the spec asks for it.
+        if self.model_spec.thinking_tag and self.model_spec.strip_thinking:
+            close_tag = f"</{self.model_spec.thinking_tag}>"
+            if close_tag in text:
+                text = text.rsplit(close_tag, 1)[-1]
+        # Step 2: extract the content between <response>...</response> tags
+        # if the model chose to wrap its answer that way.
+        match = extract_tag_content(text, "response")
+        if match.found:
+            text = match.content[0]
+        return text.strip()
 
     def process_tool_calls(self, tool_calls_content: list) -> dict:
         """Validate, execute, and collect results for each tool call."""
