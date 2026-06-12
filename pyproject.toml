@@ -11,6 +11,12 @@ dependencies = [
     "openai",
     "colorama",
     "python-dotenv",
+    # graphviz: Python wrapper around the `dot` CLI. Used by
+    # tethys_agents.visualize and tethys_agents.crew. The wrapper is pure
+    # Python; the dot binary must be installed system-wide:
+    #   Debian/Ubuntu: apt-get install graphviz
+    #   macOS:         brew install graphviz
+    "graphviz",
 ]
 
 [project.scripts]

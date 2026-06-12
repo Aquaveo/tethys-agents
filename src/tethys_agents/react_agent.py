@@ -82,6 +82,10 @@ class ReactAgent:
         self.system_prompt = system_prompt
         self.tools = tools if isinstance(tools, list) else [tools]
         self.tools_dict = {tool.name: tool for tool in self.tools}
+        # Per-run trace: each entry is {"type": "round"|"tool_call", ...}.
+        # The host can read self.trace after run() to render a workflow
+        # graph or timeline in the UI. Cleared at the top of run().
+        self.trace: list[dict] = []
 
     def add_tool_signatures(self) -> str:
         """Collect the function signatures of all available tools."""
@@ -133,20 +137,32 @@ class ReactAgent:
                     + f"\nMalformed <tool_call> JSON ({exc}). Raw payload:\n"
                     f"{tool_call_str!r}"
                 )
-                observations[call_id] = (
+                msg = (
                     f"Error: your <tool_call> body was not valid JSON ({exc}). "
                     "Re-emit the tool_call with strict JSON: "
                     '{"name": "...", "arguments": {...}, "id": <int>}.'
                 )
+                observations[call_id] = msg
+                self.trace.append({
+                    "type": "tool_call",
+                    "tool": "<malformed>",
+                    "arguments": {"raw": tool_call_str[:120]},
+                    "result": msg,
+                })
                 continue
 
             # Honor the model-supplied id if present; fall back to ordinal.
             call_id = tool_call.get("id", call_id)
             tool_name = tool_call.get("name")
             if not isinstance(tool_name, str) or not tool_name:
-                observations[call_id] = (
-                    "Error: tool_call missing 'name' (string) field."
-                )
+                msg = "Error: tool_call missing 'name' (string) field."
+                observations[call_id] = msg
+                self.trace.append({
+                    "type": "tool_call",
+                    "tool": "<missing name>",
+                    "arguments": tool_call.get("arguments", {}),
+                    "result": msg,
+                })
                 continue
 
             # 2. Resolve the tool.
@@ -157,11 +173,18 @@ class ReactAgent:
                     + f"\nUnknown tool '{tool_name}'. "
                     f"Available: {sorted(self.tools_dict.keys())}"
                 )
-                observations[call_id] = (
+                msg = (
                     f"Error: unknown tool '{tool_name}'. "
                     f"Available tools: {sorted(self.tools_dict.keys())}. "
                     "Use one of the available names exactly."
                 )
+                observations[call_id] = msg
+                self.trace.append({
+                    "type": "tool_call",
+                    "tool": tool_name,
+                    "arguments": tool_call.get("arguments", {}),
+                    "result": msg,
+                })
                 continue
 
             print(Fore.GREEN + f"\nUsing Tool: {tool_name}")
@@ -179,14 +202,27 @@ class ReactAgent:
                     Fore.RED
                     + f"\nTool '{tool_name}' raised {type(exc).__name__}: {exc}"
                 )
-                observations[call_id] = (
+                msg = (
                     f"Error: tool '{tool_name}' raised "
                     f"{type(exc).__name__}: {exc}. "
                     "Check your arguments match the tool's schema."
                 )
+                observations[call_id] = msg
+                self.trace.append({
+                    "type": "tool_call",
+                    "tool": tool_name,
+                    "arguments": tool_call.get("arguments", {}),
+                    "result": msg,
+                })
                 continue
 
             observations[call_id] = result
+            self.trace.append({
+                "type": "tool_call",
+                "tool": tool_name,
+                "arguments": validated_tool_call.get("arguments", {}),
+                "result": result if isinstance(result, str) else repr(result),
+            })
 
         return observations
 
@@ -196,6 +232,9 @@ class ReactAgent:
         max_rounds: int = 10,
     ) -> str:
         """Run the ReAct loop until an exit condition fires or max_rounds hit."""
+        # Reset the per-run trace so consecutive run() calls don't accumulate
+        # across requests.
+        self.trace = [{"type": "user", "text": user_msg}]
         user_prompt = build_prompt_structure(
             prompt=user_msg, role="user", tag="question"
         )
@@ -240,6 +279,10 @@ class ReactAgent:
                         + f"\nExited at round {round_idx + 1} "
                         f"(model_spec={self.model_spec})"
                     )
+                    self.trace.append({
+                        "type": "answer",
+                        "text": cleaned.strip(),
+                    })
                     return cleaned.strip()
 
                 thought = extract_tag_content(cleaned, "thought")
@@ -254,12 +297,23 @@ class ReactAgent:
                         f"(no <thought> tag):\n{cleaned}"
                     )
 
+                # Record this round in the trace BEFORE running tools so the
+                # round entry sits ahead of the tool_call entries it spawns.
+                self.trace.append({
+                    "type": "round",
+                    "round": round_idx + 1,
+                    "model_text": cleaned[:500],
+                    "had_tool_call": tool_calls.found,
+                })
+
                 if tool_calls.found:
                     observations = self.process_tool_calls(tool_calls.content)
                     print(Fore.BLUE + f"\nObservations: {observations}")
                     update_chat_history(chat_history, f"{observations}", "user")
 
         # Final fall-through: max_rounds reached. Make one synthesis call.
-        return self._strip_thinking(
+        final = self._strip_thinking(
             completions_create(self.client, chat_history, self.model)
         ).strip()
+        self.trace.append({"type": "answer", "text": final, "max_rounds_reached": True})
+        return final
