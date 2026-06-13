@@ -1,7 +1,6 @@
 from collections import deque
 
 from colorama import Fore
-from graphviz import Digraph  # type: ignore
 
 from .utils.logging import fancy_print
 
@@ -94,22 +93,6 @@ class Crew:
             )
 
         return sorted_agents
-
-    def plot(self):
-        """
-        Plots the Directed Acyclic Graph (DAG) of agents in the crew using Graphviz.
-
-        Returns:
-            Digraph: A Graphviz Digraph object representing the agent dependencies.
-        """
-        dot = Digraph(format="png")  # Set format to PNG for inline display
-
-        # Add nodes and edges for each agent in the crew
-        for agent in self.agents:
-            dot.node(agent.name)
-            for dependency in agent.dependencies:
-                dot.edge(dependency.name, agent.name)
-        return dot
 
     def run(self):
         """

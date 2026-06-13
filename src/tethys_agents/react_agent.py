@@ -283,8 +283,6 @@ class ReactAgent:
                         "type": "answer",
                         "text": cleaned.strip(),
                     })
-                    from tethys_agents.visualize import print_trace_ascii
-                    print_trace_ascii(self.trace)
                     return cleaned.strip()
 
                 thought = extract_tag_content(cleaned, "thought")
@@ -318,6 +316,4 @@ class ReactAgent:
             completions_create(self.client, chat_history, self.model)
         ).strip()
         self.trace.append({"type": "answer", "text": final, "max_rounds_reached": True})
-        from tethys_agents.visualize import print_trace_ascii
-        print_trace_ascii(self.trace)
         return final
