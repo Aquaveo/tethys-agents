@@ -57,7 +57,18 @@ def discover(packages: List[str]) -> List[Tool]:
         module_path = f"{pkg}.tools"
         try:
             mod = importlib.import_module(module_path)
-        except Exception:
+        except ModuleNotFoundError:
+            # The module itself (or its parent package) isn't importable -
+            # almost always an operator config bug (typo in the package
+            # list, package not installed in this env, wrong shape like
+            # `<pkg>.tools` when the convention wants just `<pkg>`).
+            # Re-raise so the caller hears about it instead of silently
+            # booting with fewer tools than expected.
+            raise
+        except ImportError:
+            # Module was found but its own top-level imports failed.
+            # Skip + warn so one broken plugin doesn't kill the whole
+            # discovery pass for the other packages in the list.
             log.warning("could not import %s; skipping", module_path, exc_info=True)
             continue
 
