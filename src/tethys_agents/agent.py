@@ -159,19 +159,41 @@ class Agent:
         """
         Creates a prompt for the agent based on its task description, expected output, and context.
 
+        The template is **action-oriented**: it tells the model to USE its
+        tools, not to describe what they would produce. This matters because
+        the wrapped string becomes ``user_msg`` for the underlying
+        ReactAgent, which the model treats as more specific than the
+        system_prompt. A narrative template ("create the best possible
+        response") here will silently override any "call tools" directive
+        in the agent's backstory, and the model exits round 1 with prose
+        instead of tool calls. See tethys_agents/react_agent.py:276 for
+        the exit condition (text + no tool calls → done).
+
         Returns:
             str: The formatted prompt string.
         """
         prompt = dedent(
             f"""
-        You are an AI agent. You are part of a team of agents working together to complete a task.
-        I'm going to give you the task description enclosed in <task_description></task_description> tags. I'll also give
-        you the available context from the other agents in <context></context> tags. If the context
-        is not available, the <context></context> tags will be empty. You'll also receive the task
-        expected output enclosed in <task_expected_output></task_expected_output> tags. With all this information
-        you need to create the best possible response, always respecting the format as describe in
-        <task_expected_output></task_expected_output> tags. If expected output is not available, just create
-        a meaningful response to complete the task.
+        You are a member of a team of agents collaborating on a task. The
+        <task_description> below is your specific assignment.
+
+        USE YOUR TOOLS. You have tool-calling capability via <tool_call>
+        blocks. Do NOT describe what your tools would do - invoke them.
+        Do NOT invent or guess their outputs - call them and read the
+        results. Even if a tool's result is cached, call it: the tool is
+        the source of truth, not your memory.
+
+        The <context> block below contains output from upstream agents on
+        your team. Read it to learn what tools they ran and what handles
+        or values they produced; pass those values verbatim to YOUR tools
+        when relevant. Do not invent placeholder names like
+        "value_from_previous_step" - substitute the actual value the
+        upstream agent's tool returned.
+
+        ONLY after every tool needed for your task has run successfully
+        may you emit a final non-tool-call message. That final message
+        should follow the <task_expected_output> format below and will be
+        read by downstream agents.
 
         <task_description>
         {self.task_description}
@@ -184,8 +206,6 @@ class Agent:
         <context>
         {self.context}
         </context>
-
-        Your response:
         """
         ).strip()
 

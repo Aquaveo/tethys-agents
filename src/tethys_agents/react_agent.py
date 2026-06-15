@@ -274,6 +274,56 @@ class ReactAgent:
                 # => the model is done answering. Works for qwen3 / llama / gpt /
                 # claude / any model that doesn't bother with <response> tags.
                 if not tool_calls.found and cleaned.strip():
+                    # First check whether the model actually tried to call
+                    # tools but slipped on format. Common failure: emitting
+                    # `{"tool_calls": [...]}` JSON in a markdown code fence
+                    # instead of <tool_call>{...}</tool_call> XML. Happens
+                    # most with qwen3/chat-trained models after they
+                    # receive a structured observation. Without this
+                    # check, the loop exits with the malformed JSON as the
+                    # final answer, the host never sees tool calls land,
+                    # and downstream consumers (Crew agents, dashboards)
+                    # silently no-op.
+                    looks_like_bad_tool_attempt = (
+                        '"tool_calls":' in cleaned
+                        or (
+                            '"name":' in cleaned
+                            and '"arguments":' in cleaned
+                        )
+                    )
+                    if looks_like_bad_tool_attempt:
+                        print(
+                            Fore.RED
+                            + f"\nRound {round_idx + 1} appears to describe "
+                            "tool calls in the WRONG format (expected "
+                            f"<{self.model_spec.tool_call_tag}> XML, got "
+                            "JSON or markdown). Injecting format correction "
+                            "and retrying."
+                        )
+                        update_chat_history(chat_history, cleaned, "assistant")
+                        update_chat_history(
+                            chat_history,
+                            (
+                                "Your last message described tool calls in "
+                                "the WRONG format. You MUST emit each tool "
+                                f"call inside <{self.model_spec.tool_call_tag}>"
+                                f"...</{self.model_spec.tool_call_tag}> XML "
+                                "tags. Do NOT use markdown code fences "
+                                "(```json...```), do NOT use a JSON "
+                                '"tool_calls" array, do NOT describe '
+                                "intended calls in prose.\n\n"
+                                "Required format (one block per tool):\n"
+                                f"<{self.model_spec.tool_call_tag}>"
+                                '{"name": "tool_name", "arguments": '
+                                '{...}, "id": 0}'
+                                f"</{self.model_spec.tool_call_tag}>\n\n"
+                                "Re-emit your intended calls in this exact "
+                                "format now."
+                            ),
+                            "user",
+                        )
+                        continue  # retry this round; don't exit
+
                     print(
                         Fore.CYAN
                         + f"\nExited at round {round_idx + 1} "

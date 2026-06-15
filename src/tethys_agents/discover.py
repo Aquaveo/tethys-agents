@@ -79,11 +79,22 @@ def discover(packages: List[str]) -> List[Tool]:
                 continue
 
             # Path 2: auto-wrap public, type-annotated functions defined
-            # in this module. See module docstring for filter rationale.
+            # in this module OR in any submodule of it. The submodule
+            # case supports plugins that organize their tools as a
+            # package (``<pkg>/tools/__init__.py`` re-exporting from
+            # ``<pkg>/tools/main.py``, ``<pkg>/tools/utils.py``, etc.).
+            # The startswith check keeps the "no accidentally-imported
+            # callables" protection — only things defined inside the
+            # <pkg>.tools tree are accepted; imported callables from
+            # unrelated packages still get filtered out.
+            own_module = getattr(value, "__module__", None) or ""
             if (
                 not attr_name.startswith("_")
                 and inspect.isfunction(value)
-                and getattr(value, "__module__", None) == module_path
+                and (
+                    own_module == module_path
+                    or own_module.startswith(module_path + ".")
+                )
                 and getattr(value, "__annotations__", None)
             ):
                 _register(seen, _wrap_as_tool(value), pkg)
