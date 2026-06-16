@@ -82,7 +82,13 @@ def discover_runners(packages: list[str]) -> Dict[str, Type[AgentRunner]]:
         module_path = f"{pkg}.agent"
         try:
             mod = importlib.import_module(module_path)
-        except ModuleNotFoundError:
+        except ModuleNotFoundError as exc:
+            # Same softening as discover(): missing <pkg>.agent submodule
+            # is fine (this package contributes tools only). Missing
+            # parent is still an operator config bug.
+            if exc.name == module_path:
+                log.debug("%s has no .agent submodule; skipping", pkg)
+                continue
             raise
         except ImportError:
             log.warning("could not import %s; skipping", module_path, exc_info=True)
