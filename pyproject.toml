@@ -11,6 +11,7 @@ dependencies = [
     "openai",
     "colorama",
     "python-dotenv",
+    "pydantic-ai"
 ]
 
 [project.scripts]
